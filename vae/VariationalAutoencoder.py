@@ -12,8 +12,8 @@ import unittest
 from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix, confusion_matrix, roc_auc_score, accuracy_score, precision_score, accuracy_score, recall_score, f1_score, confusion_matrix
 
 
-class CVAE:
-    """Convolutional Variational Autoencoder based on Keras Sequential Model."""
+class VAE:
+    """Variational Autoencoder based on Keras Sequential Model."""
 
     def __init__(self, shape=None, random_state=None):
         """Train VAE with data.
@@ -21,15 +21,10 @@ class CVAE:
         Parameters
         ----------
         shape : tuple
-            Shape of input images.
+            Shape of input.
         random_state : int
             Initialize numpy and tensorflow randomizers with seed.
         """
-        if len(shape) == 2:
-            # add channel dimension to monochrome images.
-            shape = (shape[0], shape[1], 1)
-        if len(shape) != 3:
-            raise ValueError("shape has to be a tuple of length 3!")
         self.__input_shape = shape
         # layers have to be initialized before using.
         self.__initialized_layers = False
@@ -92,7 +87,7 @@ class CVAE:
 
         """
         self.check_initialized()
-        X = self.resize(X)  # resize images to input shape
+        self.check_size(X)
         code = self.encode(X).sample(n_samples)
         print("Scoring...")
         scores = [-self.decode(code[k]).log_prob(X)
@@ -143,8 +138,7 @@ class CVAE:
         encoder = self.__encoder
         decoder = self.__decoder
         # Data
-        X = self.resize(X)  # Resize Images
-
+        self.check_size(X)
         # Model
         vae = tf.keras.Model(inputs=encoder.inputs,
                              outputs=decoder(encoder.outputs[0]))
@@ -355,7 +349,7 @@ class CVAE:
         plt.xlabel('Recall')
         plt.savefig(filepath)
 
-    def build_lenet5(self, encoded_size, k1=20, k2=50, d1=50):
+    def build_lenet5_images(self, encoded_size, k1=20, k2=50, d1=50):
         """Build encoder/decoder based on LeNet5.
 
         The encoder is based on LeNet5-architecture.
@@ -434,38 +428,38 @@ class CVAE:
         ])
         self.__initialized_layers = True
 
-    def resize(self, X):
-        """Resize image to correct dimensions.
 
-        Resizes single image by interpolation.
+    def build_LSTM(self,encoded_size,l1=100):
+        shape = self.__input_shape
+        timesteps=shape[0] # shape=(timesteps,channel)
+        channels=shape[1] # shape=(timesteps,channel)
+        # Prior
+        prior = tfd.Independent(
+            tfd.Normal(loc=tf.zeros(encoded_size), scale=1),
+            reinterpreted_batch_ndims=1)  # Bayesian prior for the latent encoding variables
+        # Encoder
+        self.__encoder = tf.keras.Sequential([
+            tf.keras.layers.InputLayer(
+                input_shape=shape, name="encoder_input"),
+            tf.keras.layers.LSTM(l1, activation='relu',name="encoder_lstm"),
+            tf.keras.layers.Dense(tfp.layers.MultivariateNormalTriL.params_size(
+                encoded_size), activation='relu', name="encoder_dense"),
+            tfp.layers.MultivariateNormalTriL(encoded_size, activity_regularizer=tfp.layers.KLDivergenceRegularizer(
+                prior, weight=1.0), name="encoder_multivariate_normal")
+        ])
+        # Decoder
+        self.__decoder = tf.keras.Sequential([
+            tf.keras.layers.InputLayer(
+                input_shape=[encoded_size], name="decoder_input"),
+            tf.keras.layers.RepeatVector(timesteps,name="repeat"),
+            tf.keras.layers.LSTM(l1, activation='relu', return_sequences=True,name="decoder_lstm"),
+            tf.keras.layers.TimeDistributed(
+                tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(channels),name="decoder_dense"),
+                name="time_distributor"),
+            tfp.layers.IndependentNormal(channels, name="decoder_normal")
+        ])
+        self.__initialized_layers = True
 
-        Parameters
-        ----------
-        X
-            Either a list of 3d numpy ND-arrays or 4d ND-array.
-
-        Returns
-        -------
-        np.ndarray
-            ND-array of resized images
-
-        """
-        print("Resize Images...")
-        # change datatype
-        X = np.array(X, dtype=np.float32)
-        # Scale to (0,1)
-        X = (X-X.min())/(X.max()-X.min())
-        # add new axis for channels
-        if X[0].ndim == 2:
-            X = X[..., np.newaxis]
-        # repeat image for each channel
-        if X.shape[1] == self.__input_shape[1] and X.shape[2] == self.__input_shape[2] and X.shape[3] == 1:
-            X = np.repeat(X, self.__input_shape[3], axis=-1)
-        # resize image
-        if X[0].shape != self.__input_shape:
-            return np.array([resize(x, output_shape=self.__input_shape) for x in tqdm(X)], dtype=np.float32)
-        else:
-            return X
 
     def save_weights(self, filename="weights.h5"):
         """Save weights locally.
@@ -532,10 +526,32 @@ class CVAE:
                                "(This method only loads the weights. The hierarchy must be constructed by building the enocder and decoder.)")
         return True
 
+    def check_size(self,X):
+        """Check shape of X.
+
+        Checks if X has correct shape, throws error otherwise.
+
+        Parameters
+        ----------
+        X : 'obj':np.ndarray
+            data of which to check size.
+
+        Returns
+        -------
+        bool
+            Returns false if X has correct shape.
+        """
+        shape=X.shape[-len(self.__input_shape):] # dropping sample index
+        if shape == self.__input_shape: # same dimensions
+            return False
+        else:
+            raise ValueError(f"X has wrong shape. Correct shape: {self.__input_shape}")
+        
+
 
 def experiment1():
     """Test training and scoring"""
-    X = np.random.rand(1000, 100, 100, 3)
+    X = np.random.rand(1000, 64, 64, 3)
     vae = CVAE(shape=(64, 64, 3))
     vae.build_lenet5(10)
     vae.train(X, epochs=1)
@@ -612,27 +628,24 @@ def experiment3():
     print("Thresholding using f1-score:")
     vae.stats(X_test,y_test,th_f1,print_results=True)
     
-
+def experiment4():
+    tsteps=100
+    t=np.linspace(0,1,tsteps)
+    channels=1
+    samples=1000
+    X = np.vstack([np.sin(10*t+r) for r in np.random.rand(samples)])
+    X=X[...,np.newaxis]
+    Y= np.random.rand(samples,tsteps,channels)
+    vae = VAE(shape=(tsteps, channels))
+    vae.build_LSTM(20,l1=200)
+    vae.train(X,epochs=20,learning_rate=1e-5)
+    score_X=vae.score(X,20)
+    score_Y=vae.score(Y,20)
+    print(np.mean(score_X))
+    print(np.mean(score_Y))
+    pass
 
 class CVAE_Testing(unittest.TestCase):
-    def test_resize(self):
-        """Test that images are correctly resized"""
-        n_samples = 2
-
-        for k in [1, 2]:
-            input_size = 4*k+12
-            for size in [1, 50]:
-                X = np.random.rand(n_samples, size, size)
-                vae = CVAE(shape=(input_size, input_size))
-                vae.build_lenet5(encoded_size=5)
-                # Test whether X has correct dimensions for network
-                vae.train(X, batch_size=1, epochs=1)
-                # Test whether input shape is correct
-                self.assertTrue(vae._CVAE__encoder.inputs[0].shape.as_list() == [
-                                None, input_size, input_size, 1])
-                # Test whether output shape is correct
-                self.assertTrue(vae._CVAE__decoder.outputs[0].shape.as_list() == [
-                                None, input_size, input_size, 1])
 
     def test_different_sizes(self):
         """Test that LeNEt-5 works with different layer sizes."""
@@ -696,13 +709,13 @@ class CVAE_Testing(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    print("Run unittesting...")
-    suite = unittest.TestSuite()
-    suite.addTest(CVAE_Testing("test_resize"))
-    suite.addTest(CVAE_Testing("test_different_sizes"))
-    suite.addTest(CVAE_Testing("test_save_load"))
-    suite.addTest(CVAE_Testing("test_channel1"))
-    runner = unittest.TextTestRunner()
-    runner.run(suite)
-    print("Run actual experiment...")
-    experiment3()
+    # print("Run unittesting...")
+    # suite = unittest.TestSuite()
+    # suite.addTest(CVAE_Testing("test_resize"))
+    # suite.addTest(CVAE_Testing("test_different_sizes"))
+    # suite.addTest(CVAE_Testing("test_save_load"))
+    # suite.addTest(CVAE_Testing("test_channel1"))
+    # runner = unittest.TextTestRunner()
+    # runner.run(suite)
+    # print("Run actual experiment...")
+    experiment4()
