@@ -216,7 +216,7 @@ class VAE:
         idx = np.argmax(f)
         return threshold[idx], f[idx]
 
-    def stats(self, X_test, y_test, threshold,print_results=False):
+    def stats(self, X_test, y_test, threshold, print_results=False):
         """Return common statistics.
 
         Compute common statistics to test the network and a given threshold.
@@ -252,17 +252,18 @@ class VAE:
                        "precision": precision,
                        "recall": recall,
                        "f1": f1,
-                       "confusion": confusion }
+                       "confusion": confusion}
         if print_results:
-                confusion_string=f"[[\t%i \t%i\t]\n [\t%i \t%i\t]]" % (confusion[0][0],confusion[0][1],confusion[1][0],confusion[1][1])
-                print("Stats\n"\
-                "----\n"\
-                "threshold: %0.4f \n"\
-                "accuracy: %0.2f\n"\
-                "f1-score: %0.2f\n"\
-                "precision: %0.2f\n"\
-                "recall: %0.2f\n"\
-                "confusion matrix:\n%s" % (threshold, accuracy, f1, precision, recall, confusion_string))
+            confusion_string = f"[[\t%i \t%i\t]\n [\t%i \t%i\t]]" % (
+                confusion[0][0], confusion[0][1], confusion[1][0], confusion[1][1])
+            print("Stats\n"
+                  "----\n"
+                  "threshold: %0.4f \n"
+                  "accuracy: %0.2f\n"
+                  "f1-score: %0.2f\n"
+                  "precision: %0.2f\n"
+                  "recall: %0.2f\n"
+                  "confusion matrix:\n%s" % (threshold, accuracy, f1, precision, recall, confusion_string))
         return return_vals
 
     def plot_roc(self, X_test, y_test, filepath="roc.png"):
@@ -287,8 +288,8 @@ class VAE:
         score_test = self.score(X_test, n_samples=20)
         # compute roc curve
         false_pos, true_pos, threshold = roc_curve(y_test, score_test)
-        y_pred=score_test[np.newaxis].transpose()>threshold
-        accuracy=np.mean(y_pred==y_test[np.newaxis].transpose(),axis=0)
+        y_pred = score_test[np.newaxis].transpose() > threshold
+        accuracy = np.mean(y_pred == y_test[np.newaxis].transpose(), axis=0)
         # accuracy = (true_pos-false_pos)*pos+neg  # (TP+TN)/(P+N)
         roc_auc = auc(false_pos, true_pos)
         # max accuracy threshold
@@ -427,12 +428,23 @@ class VAE:
             # (shape,convert_to_tensor_fn=tfd.Bernoulli.logits,name="decoder_bernoulli")
         ])
         self.__initialized_layers = True
+    
+    def build_LSTM(self, encoded_size, n_lstm=100):
+        """Build encoder/decoder based on LSTMs.
 
+        This VAE is based on a pair of LSTMs.
 
-    def build_LSTM(self,encoded_size,l1=100):
+        Parameters
+        ----------
+        encoded_size
+            Size of the code layer. Determines the size of the output of the encoder.
+        n_lstm
+            Number of LSTM Cells used as encoder/decoder
+
+        """
         shape = self.__input_shape
-        timesteps=shape[0] # shape=(timesteps,channel)
-        channels=shape[1] # shape=(timesteps,channel)
+        timesteps = shape[0]  # shape=(timesteps,channel)
+        channels = shape[1]  # shape=(timesteps,channel)
         # Prior
         prior = tfd.Independent(
             tfd.Normal(loc=tf.zeros(encoded_size), scale=1),
@@ -441,7 +453,8 @@ class VAE:
         self.__encoder = tf.keras.Sequential([
             tf.keras.layers.InputLayer(
                 input_shape=shape, name="encoder_input"),
-            tf.keras.layers.LSTM(l1, activation='relu',name="encoder_lstm"),
+            tf.keras.layers.LSTM(n_lstm, activation='relu',
+                                 name="encoder_lstm"),
             tf.keras.layers.Dense(tfp.layers.MultivariateNormalTriL.params_size(
                 encoded_size), activation='relu', name="encoder_dense"),
             tfp.layers.MultivariateNormalTriL(encoded_size, activity_regularizer=tfp.layers.KLDivergenceRegularizer(
@@ -451,15 +464,16 @@ class VAE:
         self.__decoder = tf.keras.Sequential([
             tf.keras.layers.InputLayer(
                 input_shape=[encoded_size], name="decoder_input"),
-            tf.keras.layers.RepeatVector(timesteps,name="repeat"),
-            tf.keras.layers.LSTM(l1, activation='relu', return_sequences=True,name="decoder_lstm"),
+            tf.keras.layers.RepeatVector(timesteps, name="repeat"),
+            tf.keras.layers.LSTM(n_lstm, activation='relu',
+                                 return_sequences=True, name="decoder_lstm"),
             tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(channels),name="decoder_dense"),
+                tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
+                    channels), name="decoder_dense"),
                 name="time_distributor"),
             tfp.layers.IndependentNormal(channels, name="decoder_normal")
         ])
         self.__initialized_layers = True
-
 
     def save_weights(self, filename="weights.h5"):
         """Save weights locally.
@@ -526,7 +540,7 @@ class VAE:
                                "(This method only loads the weights. The hierarchy must be constructed by building the enocder and decoder.)")
         return True
 
-    def check_size(self,X):
+    def check_size(self, X):
         """Check shape of X.
 
         Checks if X has correct shape, throws error otherwise.
@@ -541,12 +555,12 @@ class VAE:
         bool
             Returns false if X has correct shape.
         """
-        shape=X.shape[-len(self.__input_shape):] # dropping sample index
-        if shape == self.__input_shape: # same dimensions
+        shape = X.shape[-len(self.__input_shape):]  # dropping sample index
+        if shape == self.__input_shape:  # same dimensions
             return False
         else:
-            raise ValueError(f"X has wrong shape. Correct shape: {self.__input_shape}")
-        
+            raise ValueError(
+                f"X has wrong shape. Correct shape: {self.__input_shape}")
 
 
 def experiment1():
@@ -563,10 +577,9 @@ def experiment1():
     Y = np.random.rand(10, 100, 100, 3)
     print(vae.score(Y))
 
-
 def experiment2():
     """Train classification of zeros and eights"""
-    filename="experiment2.h5"
+    filename = "experiment2.h5"
     if not os.path.isfile(filename):  # train
         (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
         X_train = [X_train[i] for i in range(len(X_train)) if y_train[i] == 0]
@@ -595,7 +608,6 @@ def experiment2():
     plt.legend(loc='upper right')
     plt.savefig("experiment2.png")
 
-
 def experiment3():
     """Train betwork on zeros. Treat all other numbers as anomalies."""
     (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -603,7 +615,7 @@ def experiment3():
     X_train, X_val, y_train, y_val = train_test_split(
         X_train, y_train, test_size=0.1)
     # Network
-    filename="experiment3.h5"
+    filename = "experiment3.h5"
     if not os.path.isfile(filename):  # train
         X_train = [X_train[i] for i in range(len(X_train)) if y_train[i] == 0]
         vae = CVAE(shape=(28, 28))
@@ -624,26 +636,30 @@ def experiment3():
     th_f1, _ = vae.threshold_max_f(X_val, y_val)
     th_acc, _ = vae.threshold_max_acc(X_val, y_val)
     print("Thresholding using accuracy:")
-    vae.stats(X_test,y_test,th_acc,print_results=True)
+    vae.stats(X_test, y_test, th_acc, print_results=True)
     print("Thresholding using f1-score:")
-    vae.stats(X_test,y_test,th_f1,print_results=True)
-    
+    vae.stats(X_test, y_test, th_f1, print_results=True)
+
 def experiment4():
-    tsteps=100
-    t=np.linspace(0,1,tsteps)
-    channels=1
-    samples=1000
-    X = np.vstack([np.sin(10*t+r) for r in np.random.rand(samples)])
-    X=X[...,np.newaxis]
-    Y= np.random.rand(samples,tsteps,channels)
+    tsteps = 20
+    t = np.linspace(0, 1, tsteps)
+    channels = 1
+    samples = 1000
+    X = np.vstack([np.sin(10*t+r)
+                   for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
+    Y = np.random.rand(samples, tsteps, channels)
+    Z = np.vstack([np.sin(11*t+r)
+                   for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
     vae = VAE(shape=(tsteps, channels))
-    vae.build_LSTM(20,l1=200)
-    vae.train(X,epochs=20,learning_rate=1e-5)
-    score_X=vae.score(X,20)
-    score_Y=vae.score(Y,20)
+    vae.build_LSTM(5, l1=200)
+    vae.train(X, epochs=100, learning_rate=1e-3)
+    score_X = vae.score(X, 20)
+    score_Y = vae.score(Y, 20)
+    score_Z = vae.score(Z, 20)
     print(np.mean(score_X))
     print(np.mean(score_Y))
-    pass
+    print(np.mean(score_Z))
+
 
 class CVAE_Testing(unittest.TestCase):
 
