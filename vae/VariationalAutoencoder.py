@@ -3,7 +3,6 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 from sklearn.model_selection import train_test_split
-from skimage.transform import resize
 from tqdm import tqdm
 import h5py
 import os
@@ -11,6 +10,7 @@ from matplotlib import pyplot as plt
 import unittest
 from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix, confusion_matrix, roc_auc_score, accuracy_score, precision_score, accuracy_score, recall_score, f1_score, confusion_matrix
 
+from tensorflow.keras.regularizers import l1_l2
 
 class VAE:
     """Variational Autoencoder based on Keras Sequential Model."""
@@ -118,7 +118,7 @@ class VAE:
         score = self.score(X, n_samples)
         return score > threshold
 
-    def train(self, X, epochs=10, batch_size=50, learning_rate=1e-3):
+    def train(self, X, epochs=10, batch_size=50, **kwargs):
         """Train VAE with data.
 
         Parameters
@@ -130,8 +130,8 @@ class VAE:
             Number of epochs of optimization
         batch_size : int
             Size of each batch during optimization
-        learning_rate : float
-            Learning rate for the optimizer
+        kwargs : dict
+            various parameters for the Keras optimizer, e.g. learning_rate, clipvalue
         """
         self.check_initialized()
         ## Encoder / Decoder
@@ -144,7 +144,7 @@ class VAE:
                              outputs=decoder(encoder.outputs[0]))
         # optimize model by minimizing the expected reconstruction error
         def negative_log_likelihood(x, rv_x): return -rv_x.log_prob(x)
-        vae.compile(optimizer=tf.optimizers.Adam(learning_rate=learning_rate),
+        vae.compile(optimizer=tf.optimizers.Adam(**kwargs),
                     loss=negative_log_likelihood)
         # fit data to reconstruct itself
         vae.fit(X, X, batch_size=batch_size, epochs=epochs)
@@ -429,7 +429,7 @@ class VAE:
         ])
         self.__initialized_layers = True
     
-    def build_LSTM(self, encoded_size, n_lstm=100):
+    def build_LSTM(self, encoded_size, n_lstm=100,l1=0.0,l2=0.0):
         """Build encoder/decoder based on LSTMs.
 
         This VAE is based on a pair of LSTMs.
@@ -453,8 +453,12 @@ class VAE:
         self.__encoder = tf.keras.Sequential([
             tf.keras.layers.InputLayer(
                 input_shape=shape, name="encoder_input"),
-            tf.keras.layers.LSTM(n_lstm, activation='relu',
-                                 name="encoder_lstm"),
+            tf.keras.layers.LSTM(n_lstm, 
+                                activation='relu',
+                                name="encoder_lstm",
+                                kernel_regularizer=l1_l2(l1=l1, l2=l2),
+                                recurrent_regularizer=l1_l2(l1=l1, l2=l2),
+                                activity_regularizer=l1_l2(l1=l1, l2=l2)),
             tf.keras.layers.Dense(tfp.layers.MultivariateNormalTriL.params_size(
                 encoded_size), activation='relu', name="encoder_dense"),
             tfp.layers.MultivariateNormalTriL(encoded_size, activity_regularizer=tfp.layers.KLDivergenceRegularizer(
@@ -465,8 +469,13 @@ class VAE:
             tf.keras.layers.InputLayer(
                 input_shape=[encoded_size], name="decoder_input"),
             tf.keras.layers.RepeatVector(timesteps, name="repeat"),
-            tf.keras.layers.LSTM(n_lstm, activation='relu',
-                                 return_sequences=True, name="decoder_lstm"),
+            tf.keras.layers.LSTM(n_lstm, 
+                                activation='relu',
+                                return_sequences=True, 
+                                name="decoder_lstm",
+                                kernel_regularizer=l1_l2(l1=l1, l2=l2),
+                                recurrent_regularizer=l1_l2(l1=l1, l2=l2),
+                                activity_regularizer=l1_l2(l1=l1, l2=l2)),
             tf.keras.layers.TimeDistributed(
                 tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
                     channels), name="decoder_dense"),
@@ -644,18 +653,18 @@ def experiment4():
     tsteps = 20
     t = np.linspace(0, 1, tsteps)
     channels = 1
-    samples = 1000
+    samples = 10000
     X = np.vstack([np.sin(10*t+r)
                    for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
     Y = np.random.rand(samples, tsteps, channels)
     Z = np.vstack([np.sin(11*t+r)
                    for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
     vae = VAE(shape=(tsteps, channels))
-    vae.build_LSTM(5, l1=200)
-    vae.train(X, epochs=100, learning_rate=1e-3)
-    score_X = vae.score(X, 20)
-    score_Y = vae.score(Y, 20)
-    score_Z = vae.score(Z, 20)
+    vae.build_LSTM(5, n_lstm=200,l1=0.0,l2=0.0)
+    vae.train(X, epochs=5, learning_rate=1e-3)
+    score_X = vae.score(X, 1)
+    score_Y = vae.score(Y, 1)
+    score_Z = vae.score(Z, 1)
     print(np.mean(score_X))
     print(np.mean(score_Y))
     print(np.mean(score_Z))
