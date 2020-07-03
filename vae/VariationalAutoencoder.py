@@ -9,7 +9,7 @@ import os
 from matplotlib import pyplot as plt
 import unittest
 from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix, confusion_matrix, roc_auc_score, accuracy_score, precision_score, accuracy_score, recall_score, f1_score, confusion_matrix
-
+from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.regularizers import l1_l2
 
 class VAE:
@@ -25,9 +25,7 @@ class VAE:
         random_state : int
             Initialize numpy and tensorflow randomizers with seed.
         """
-        self.__input_shape = shape
-        # layers have to be initialized before using.
-        self.__initialized_layers = False
+        self.shape = shape
         # set random state
         if random_state is not None:
             np.random.seed(random_state)
@@ -47,7 +45,6 @@ class VAE:
             The 4-dimensional image data which is to be encoded
 
         """
-        self.check_initialized()
         return self.__encoder(X)
 
     def decode(self, code):
@@ -63,62 +60,10 @@ class VAE:
             Code which was sampled from the encoded layer. SIze depends on encoded_size
 
         """
-        self.check_initialized()
         return self.__decoder(code)
 
-    def score(self, X, n_samples=10):
-        """Compute anomaly score by means of the reconstruction probability.
 
-        This anomaly score is based on the paper "Variational Autoencoder based Anomaly Detection using Reconstruction Probability".
-        The score represents the negative log-likelihood of a reconstruction by the trained network.
-        The higher the score gets, the less likely would be a reconstruction of the input, hence more likely to be an anomaly.
-
-        Parameters
-        ----------
-        X : 'obj':np.ndarray
-            The 4-dimensional image data which is to be scored
-        n_samples : int
-            Number of samples used for evaluation of the Monte-Carlo estimate
-
-        Returns
-        -------
-        'obj':np.ndarray
-            Score for each sample in X by means of the estimated reconstruction error. 
-
-        """
-        self.check_initialized()
-        self.check_size(X)
-        code = self.encode(X).sample(n_samples)
-        print("Scoring...")
-        scores = [-self.decode(code[k]).log_prob(X)
-                  for k in tqdm(range(n_samples))]
-        return tf.reduce_mean(scores, axis=0).numpy()
-
-    def predict(self, X, threshold, n_samples=10):
-        """Predict whether X is anomolous.
-
-        Classify based on the score and a threshold whether a sample is anomolous or not.
-        As the score is a recognition score, samples with smaller score are recognized less likely.
-
-        Parameters
-        ----------
-        X : 'obj':np.ndarray
-            The 4-dimensional image data which is to be classified.
-        threshold : float
-            Threshold used to classify the samples.
-        n_samples : int
-            Number of samples used for evaluation of the Monte-Carlo estimate.
-
-        Returns
-        -------
-        'obj':np.ndarray
-            Boolean classification. Iff True the sample is anomolous.
-
-        """
-        score = self.score(X, n_samples)
-        return score > threshold
-
-    def train(self, X, epochs=10, batch_size=50, **kwargs):
+    def train(self, X, epochs=10, batch_size=50, X_target=None, **kwargs):
         """Train VAE with data.
 
         Parameters
@@ -133,12 +78,9 @@ class VAE:
         kwargs : dict
             various parameters for the Keras optimizer, e.g. learning_rate, clipvalue
         """
-        self.check_initialized()
         ## Encoder / Decoder
         encoder = self.__encoder
         decoder = self.__decoder
-        # Data
-        self.check_size(X)
         # Model
         vae = tf.keras.Model(inputs=encoder.inputs,
                              outputs=decoder(encoder.outputs[0]))
@@ -147,208 +89,11 @@ class VAE:
         vae.compile(optimizer=tf.optimizers.Adam(**kwargs),
                     loss=negative_log_likelihood)
         # fit data to reconstruct itself
-        vae.fit(X, X, batch_size=batch_size, epochs=epochs)
+        if X_target is None: # else train alternative target representation
+            X_target=X
+        vae.fit(X, X_target, batch_size=batch_size, epochs=epochs)
 
-    def threshold_max_acc(self, X_val, y_val):
-        """Threshold with maximal accuracy
 
-        Find threshold, which maximizes the accuracy on the validation set.
-
-        Parameters
-        ----------
-        X_val : 'obj':np.ndarray
-            Subset used for validation.
-        y_val : 'obj':np.ndarray
-            Validation set labels
-
-        Returns
-        -------
-        float
-            Threshold, which can be used to determine anomalies. 
-            if score(x)<threshold then x is an anomaly.
-        float
-            Accuracy at the threshold point
-        """
-        self.check_initialized()
-        y_val = (y_val != 0)  # set everything but zero to 1
-        pos = np.mean(y_val)  # positive samples
-        neg = 1-pos
-        # calculate score
-        score_val = self.score(X_val, n_samples=10)
-        # compute roc curve
-        false_pos, true_pos, threshold = roc_curve(y_val, score_val)
-        accuracy = (true_pos-false_pos)*pos+neg  # (TP+TN)/(P+N)
-        idx = np.argmax(accuracy)
-        return threshold[idx], accuracy[idx]
-
-    def threshold_max_f(self, X_val, y_val, beta=1):
-        """Threshold with f-score
-
-        Find threshold, which maximizes the f-score on the validation set.
-
-        Parameters
-        ----------
-        X_val : 'obj':np.ndarray
-            Subset used for validation.
-        y_val : 'obj':np.ndarray
-            Validation set labels
-        beta : float
-            determines the F_beta function to use. 
-
-        Returns
-        -------
-        float
-            Threshold, which can be used to determine anomalies. 
-            if score(x)<threshold then x is an anomaly.
-        float
-            Value of the f-score at th threshold point
-
-        """
-        self.check_initialized()
-        y_val = (y_val != 0)  # set everything but zero to 1
-        # calculate score
-        score_val = self.score(X_val, n_samples=20)
-        # compute precision, recall curve
-        precision, recall, threshold = precision_recall_curve(y_val, score_val)
-        precision = precision[:-1]
-        recall = recall[:-1]
-        f = (1+beta**2)*precision*recall/((precision*beta**2)+recall)
-        idx = np.argmax(f)
-        return threshold[idx], f[idx]
-
-    def stats(self, X_test, y_test, threshold, print_results=False):
-        """Return common statistics.
-
-        Compute common statistics to test the network and a given threshold.
-
-        Parameters
-        ----------
-        X_test : 'obj':np.ndarray
-            Subset used for testing.
-        y_test : 'obj':np.ndarray
-            Test set labels
-        threshold : float
-            Evaluated scoring threshold
-        print_results : boolean
-            If true print results to stdout.
-
-        Returns
-        -------
-        dict
-            Dictionary containing common test statistics liek accuracy, precision, recall, f1-score and a confusion matrix
-
-        """
-        self.check_initialized()
-        # data
-        y_pred = self.predict(X_test, threshold)
-        y_test = (y_test != 0)  # set everything but zero to 1
-        # stats
-        accuracy = accuracy_score(y_test, y_pred)
-        precision = precision_score(y_test, y_pred)
-        recall = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred)
-        confusion = confusion_matrix(y_test, y_pred)
-        return_vals = {"accuracy": accuracy,
-                       "precision": precision,
-                       "recall": recall,
-                       "f1": f1,
-                       "confusion": confusion}
-        if print_results:
-            confusion_string = f"[[\t%i \t%i\t]\n [\t%i \t%i\t]]" % (
-                confusion[0][0], confusion[0][1], confusion[1][0], confusion[1][1])
-            print("Stats\n"
-                  "----\n"
-                  "threshold: %0.4f \n"
-                  "accuracy: %0.2f\n"
-                  "f1-score: %0.2f\n"
-                  "precision: %0.2f\n"
-                  "recall: %0.2f\n"
-                  "confusion matrix:\n%s" % (threshold, accuracy, f1, precision, recall, confusion_string))
-        return return_vals
-
-    def plot_roc(self, X_test, y_test, filepath="roc.png"):
-        """Plot the Receiver operating characteristic
-
-        Calculates the receiver operating characteristic and saves a plot to disk.
-
-        Parameters
-        ----------
-        X_test : 'obj':np.ndarray
-            Subset used for testing.
-        y_test : 'obj':np.ndarray
-            Test set labels
-        filepath : 'obj':str
-            Filepath to be used for saving the plot.
-        """
-        self.check_initialized()
-        y_test = (y_test != 0)  # set everything but zero to 1
-        pos = np.mean(y_test)  # positive samples
-        neg = 1-pos
-        # calculate score
-        score_test = self.score(X_test, n_samples=20)
-        # compute roc curve
-        false_pos, true_pos, threshold = roc_curve(y_test, score_test)
-        y_pred = score_test[np.newaxis].transpose() > threshold
-        accuracy = np.mean(y_pred == y_test[np.newaxis].transpose(), axis=0)
-        # accuracy = (true_pos-false_pos)*pos+neg  # (TP+TN)/(P+N)
-        roc_auc = auc(false_pos, true_pos)
-        # max accuracy threshold
-        idx = np.argmax(accuracy)
-        fig, ax = plt.subplots()
-        plt.scatter(false_pos[idx], true_pos[idx], c="b",
-                    s=70, label="maximal ACC= %0.2f" % accuracy[idx])
-        plt.title('Receiver Operating Characteristic')
-        plt.plot(false_pos, true_pos, 'b',
-                 label='ROC curve (AUC= %0.2f)' % roc_auc)
-        plt.legend(loc='lower right')
-        plt.plot([0, 1], [0, 1], 'r--')
-        plt.xlim([0, 1])
-        plt.ylim([0, 1])
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-        plt.savefig(filepath)
-
-    def plot_prc(self, X_test, y_test, beta=1, filepath="prc.png"):
-        """Plot the Precision and Recall Statistics
-        Calculates the precision and recall statistics and saves a plot to disk.
-
-        Parameters
-        ----------
-        X_test : 'obj':np.ndarray
-            Subset used for testing.
-        y_test : 'obj':np.ndarray
-            Test set labels
-        beta : float
-            determines the F_beta function to use. 
-        filepath : 'obj':str
-            Filepath to be used for saving the plot.
-        """
-        self.check_initialized()
-        y_test = (y_test != 0)  # set everything but zero to 1
-        pos = np.mean(y_test)  # positive samples
-        # calculate score
-        score_val = self.score(X_test, n_samples=20)
-        # compute precision, recall curve
-        precision, recall, _ = precision_recall_curve(y_test, score_val)
-        precision = precision[:-1]
-        recall = recall[:-1]
-        f = (1+beta**2)*precision*recall/((precision*beta**2)+recall)
-        prc_auc = auc(recall, precision)
-        # max f1 threshold
-        idx = np.argmax(f)
-        fig, ax = plt.subplots()
-        plt.scatter(recall[idx], precision[idx], c="b", s=70,
-                    label="maximal F%0.1f= %0.2f" % (beta, f[idx]))
-        plt.title('Precision-Recall Characteristic')
-        plt.plot(recall, precision, 'b',
-                 label='PRC curve (AUC= %0.2f)' % prc_auc)
-        plt.legend(loc='lower right')
-        plt.xlim([0, 1])
-        plt.ylim([0, 1])
-        # plt.plot([0, 1], [pos, pos], 'r--')
-        plt.ylabel('Precision')
-        plt.xlabel('Recall')
-        plt.savefig(filepath)
 
     def build_lenet5_images(self, encoded_size, k1=20, k2=50, d1=50):
         """Build encoder/decoder based on LeNet5.
@@ -368,7 +113,7 @@ class VAE:
 
         """
 
-        shape = self.__input_shape
+        shape = self.shape
 
         if shape[0] != shape[1]:  # check if input is quadratic
             raise ValueError("Input shape must represent quadratic image.")
@@ -442,7 +187,7 @@ class VAE:
             Number of LSTM Cells used as encoder/decoder
 
         """
-        shape = self.__input_shape
+        shape = self.shape
         timesteps = shape[0]  # shape=(timesteps,channel)
         channels = shape[1]  # shape=(timesteps,channel)
         # Prior
@@ -477,10 +222,15 @@ class VAE:
                                 recurrent_regularizer=l1_l2(l1=l1, l2=l2),
                                 activity_regularizer=l1_l2(l1=l1, l2=l2)),
             tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
+                tf.keras.layers.Dense(tfp.layers.IndependentBernoulli.params_size(
                     channels), name="decoder_dense"),
                 name="time_distributor"),
-            tfp.layers.IndependentNormal(channels, name="decoder_normal")
+            tfp.layers.IndependentBernoulli(channels, name="decoder_bernoulli")
+            # tf.keras.layers.TimeDistributed(
+            #     tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
+            #         channels), name="decoder_dense"),
+            #     name="time_distributor"),
+            # tfp.layers.IndependentNormal(channels, name="decoder_normal")
         ])
         self.__initialized_layers = True
 
@@ -492,7 +242,6 @@ class VAE:
         filename : 'obj':string
             The filename of the h5 save file.
         """
-        self.check_initialized()
         file = h5py.File(filename, 'w')
         print("Saving weights...")
         # Encoder
@@ -523,7 +272,6 @@ class VAE:
             The filename of the h5 save file.
 
         """
-        self.check_initialized()
         file = h5py.File(filename, 'r')
         print("Loading weights...")
         # Encoder
@@ -542,205 +290,327 @@ class VAE:
 
         file.close()
 
-    def check_initialized(self):
-        """Checks whether layers have been initialized."""
-        if not self.__initialized_layers:
-            raise RuntimeError("The encode/decode layers have not yet been initialized."
-                               "(This method only loads the weights. The hierarchy must be constructed by building the enocder and decoder.)")
-        return True
 
-    def check_size(self, X):
-        """Check shape of X.
 
-        Checks if X has correct shape, throws error otherwise.
+class ReconstructionScoreVAE(VAE):
+
+    def __init__(self,shape=None,random_state=None):
+        super().__init__(shape,random_state)
+
+
+    def score(self, X, n_samples=10):
+        """Compute anomaly score by means of the reconstruction probability.
+
+        This anomaly score is based on the paper "Variational Autoencoder based Anomaly Detection using Reconstruction Probability".
+        The score represents the negative log-likelihood of a reconstruction by the trained network.
+        The higher the score gets, the less likely would be a reconstruction of the input, hence more likely to be an anomaly.
 
         Parameters
         ----------
         X : 'obj':np.ndarray
-            data of which to check size.
+            The 4-dimensional image data which is to be scored
+        n_samples : int
+            Number of samples used for evaluation of the Monte-Carlo estimate
 
         Returns
         -------
-        bool
-            Returns false if X has correct shape.
+        'obj':np.ndarray
+            Score for each sample in X by means of the estimated reconstruction error. 
+
         """
-        shape = X.shape[-len(self.__input_shape):]  # dropping sample index
-        if shape == self.__input_shape:  # same dimensions
-            return False
-        else:
-            raise ValueError(
-                f"X has wrong shape. Correct shape: {self.__input_shape}")
+        code = self.encode(X).sample(n_samples)
+        print("Scoring...")
+        scores = [-self.decode(code[k]).log_prob(X)
+                  for k in tqdm(range(n_samples))]
+        return tf.reduce_mean(scores, axis=0).numpy()
 
+    def predict(self, X, threshold, n_samples=10):
+        """Predict whether X is anomolous.
 
-def experiment1():
-    """Test training and scoring"""
-    X = np.random.rand(1000, 64, 64, 3)
-    vae = CVAE(shape=(64, 64, 3))
-    vae.build_lenet5(10)
-    vae.train(X, epochs=1)
-    vae.save_weights()
+        Classify based on the score and a threshold whether a sample is anomolous or not.
+        As the score is a recognition score, samples with smaller score are recognized less likely.
 
-    vae = CVAE(shape=(64, 64, 3))
-    vae.build_lenet5(10)
-    vae.load_weights()
-    Y = np.random.rand(10, 100, 100, 3)
-    print(vae.score(Y))
+        Parameters
+        ----------
+        X : 'obj':np.ndarray
+            The 4-dimensional image data which is to be classified.
+        threshold : float
+            Threshold used to classify the samples.
+        n_samples : int
+            Number of samples used for evaluation of the Monte-Carlo estimate.
 
-def experiment2():
-    """Train classification of zeros and eights"""
-    filename = "experiment2.h5"
-    if not os.path.isfile(filename):  # train
-        (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-        X_train = [X_train[i] for i in range(len(X_train)) if y_train[i] == 0]
-        vae = CVAE(shape=(28, 28))
-        vae.build_lenet5(10)
-        vae.train(X_train, epochs=20)
-        vae.save_weights(filename)
-    else:  # load from file
-        (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-        vae = CVAE(shape=(28, 28))
-        vae.build_lenet5(10)
-        vae.load_weights(filename)
+        Returns
+        -------
+        'obj':np.ndarray
+            Boolean classification. Iff True the sample is anomolous.
 
-    X_test_zero = [X_test[i] for i in range(len(X_test)) if y_test[i] == 0]
-    X_test_nonzero = [X_test[i] for i in range(len(X_test)) if y_test[i] == 8]
-    score_zero = vae.score(X_test_zero)
-    score_nonzero = vae.score(X_test_nonzero)
-    print(f"Zero class:\n mean={np.mean(score_zero)}, median={np.median(score_zero)}, std={np.std(score_zero)}, min={np.min(score_zero)}, max={np.max(score_zero)}")
-    print(f"Non-Zero class:\n mean={np.mean(score_nonzero)}, median={np.median(score_nonzero)}, std={np.std(score_nonzero)}, min={np.min(score_nonzero)}, max={np.max(score_nonzero)}")
+        """
+        score = self.score(X, n_samples)
+        return score > threshold
 
-    both = np.concatenate([score_zero, score_nonzero])
-    bins = np.linspace(np.quantile(both, 0.1), np.quantile(both, 0.9), 20)
-    plt.title("Reconstruction Log-Probability")
-    plt.hist(score_zero, bins, alpha=0.5, label='zero')
-    plt.hist(score_nonzero, bins, alpha=0.5, label='eight')
-    plt.legend(loc='upper right')
-    plt.savefig("experiment2.png")
+    def threshold_max_acc(self, X_val, y_val):
+        """Threshold with maximal accuracy
 
-def experiment3():
-    """Train betwork on zeros. Treat all other numbers as anomalies."""
-    (X_train, y_train), (X_test, y_test) = tf.keras.datasets.mnist.load_data()
-    # take 10% for validation
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=0.1)
-    # Network
-    filename = "experiment3.h5"
-    if not os.path.isfile(filename):  # train
-        X_train = [X_train[i] for i in range(len(X_train)) if y_train[i] == 0]
-        vae = CVAE(shape=(28, 28))
-        vae.build_lenet5(10)
-        vae.train(X_train, epochs=20)
-        vae.save_weights(filename)
-    else:  # load from file
-        vae = CVAE(shape=(28, 28))
-        vae.build_lenet5(10)
-        vae.load_weights(filename)
+        Find threshold, which maximizes the accuracy on the validation set.
 
-    # ROC
-    vae.plot_roc(X_test, y_test)
-    # PRC
-    vae.plot_prc(X_test, y_test)
+        Parameters
+        ----------
+        X_val : 'obj':np.ndarray
+            Subset used for validation.
+        y_val : 'obj':np.ndarray
+            Validation set labels
 
-    # use validation set to determine threshold
-    th_f1, _ = vae.threshold_max_f(X_val, y_val)
-    th_acc, _ = vae.threshold_max_acc(X_val, y_val)
-    print("Thresholding using accuracy:")
-    vae.stats(X_test, y_test, th_acc, print_results=True)
-    print("Thresholding using f1-score:")
-    vae.stats(X_test, y_test, th_f1, print_results=True)
+        Returns
+        -------
+        float
+            Threshold, which can be used to determine anomalies. 
+            if score(x)<threshold then x is an anomaly.
+        float
+            Accuracy at the threshold point
+        """
+        y_val = (y_val != 0)  # set everything but zero to 1
+        pos = np.mean(y_val)  # positive samples
+        neg = 1-pos
+        # calculate score
+        score_val = self.score(X_val, n_samples=10)
+        # compute roc curve
+        false_pos, true_pos, threshold = roc_curve(y_val, score_val)
+        accuracy = (true_pos-false_pos)*pos+neg  # (TP+TN)/(P+N)
+        idx = np.argmax(accuracy)
+        return threshold[idx], accuracy[idx]
 
-def experiment4():
-    tsteps = 20
-    t = np.linspace(0, 1, tsteps)
-    channels = 1
-    samples = 10000
-    X = np.vstack([np.sin(10*t+r)
-                   for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
-    Y = np.random.rand(samples, tsteps, channels)
-    Z = np.vstack([np.sin(11*t+r)
-                   for r in np.pi*np.random.rand(samples)])[..., np.newaxis]
-    vae = VAE(shape=(tsteps, channels))
-    vae.build_LSTM(5, n_lstm=200,l1=0.0,l2=0.0)
-    vae.train(X, epochs=5, learning_rate=1e-3)
-    score_X = vae.score(X, 1)
-    score_Y = vae.score(Y, 1)
-    score_Z = vae.score(Z, 1)
-    print(np.mean(score_X))
-    print(np.mean(score_Y))
-    print(np.mean(score_Z))
+    def threshold_max_f(self, X_val, y_val, beta=1):
+        """Threshold with f-score
 
+        Find threshold, which maximizes the f-score on the validation set.
 
-class CVAE_Testing(unittest.TestCase):
+        Parameters
+        ----------
+        X_val : 'obj':np.ndarray
+            Subset used for validation.
+        y_val : 'obj':np.ndarray
+            Validation set labels
+        beta : float
+            determines the F_beta function to use. 
 
-    def test_different_sizes(self):
-        """Test that LeNEt-5 works with different layer sizes."""
-        n_samples = 3
-        for k in [1, 2]:
-            size = np.random.randint(5, 300)
-            X = np.random.rand(n_samples, size, size)
-            input_size = 4*k+12
-            vae = CVAE(shape=(input_size, input_size))
-            vae.build_lenet5(encoded_size=np.random.randint(1, 2),
-                             k1=np.random.randint(1, 2),
-                             k2=np.random.randint(1, 2),
-                             d1=np.random.randint(1, 2))
-            vae.train(X, batch_size=np.random.randint(1, 10), epochs=1)
+        Returns
+        -------
+        float
+            Threshold, which can be used to determine anomalies. 
+            if score(x)<threshold then x is an anomaly.
+        float
+            Value of the f-score at th threshold point
 
-    def test_save_load(self):
-        """Test that weights are correctly saved to disk and restored."""
-        n_samples = 5
-        size = 28
-        X = np.random.rand(n_samples, size, size)
-        vae1 = CVAE(shape=(28, 28))
-        vae1.build_lenet5(10)
-        vae1.train(X, epochs=1)
-        filename = "unittest.h5"
-        encoder1 = vae1._CVAE__encoder
-        decoder1 = vae1._CVAE__decoder
-        vae1.save_weights(filename)
+        """
+        y_val = (y_val != 0)  # set everything but zero to 1
+        # calculate score
+        score_val = self.score(X_val, n_samples=20)
+        # compute precision, recall curve
+        precision, recall, threshold = precision_recall_curve(y_val, score_val)
+        precision = precision[:-1]
+        recall = recall[:-1]
+        f = (1+beta**2)*precision*recall/((precision*beta**2)+recall)
+        idx = np.argmax(f)
+        return threshold[idx], f[idx]
 
-        vae2 = CVAE(shape=(28, 28))
-        vae2.build_lenet5(10)
-        vae2.load_weights(filename)
-        encoder2 = vae2._CVAE__encoder
-        decoder2 = vae2._CVAE__decoder
+    def stats(self, X_test, y_test, threshold, print_results=False):
+        """Return common statistics.
 
-        # Assert that The weights have been saved correctly and are the same as before
-        self.assertTrue([(w1 == w2).all() for (w1, w2) in zip(
-            encoder1.get_weights(), encoder2.get_weights())])
-        self.assertTrue([(w1 == w2).all() for (w1, w2) in zip(
-            decoder1.get_weights(), decoder2.get_weights())])
-        os.remove(filename)
+        Compute common statistics to test the network and a given threshold.
 
-    def test_channel1(self):
-        """Test that a nchannels=1 input gets treated the same as no channels"""
-        n_samples = 1000
-        size = 64
-        X1 = np.random.rand(n_samples, size, size)
-        X2 = X1[..., np.newaxis]
-        X_test = np.random.rand(100, size, size)
+        Parameters
+        ----------
+        X_test : 'obj':np.ndarray
+            Subset used for testing.
+        y_test : 'obj':np.ndarray
+            Test set labels
+        threshold : float
+            Evaluated scoring threshold
+        print_results : boolean
+            If true print results to stdout.
 
-        vae1 = CVAE(shape=(28, 28), random_state=0)
-        vae1.build_lenet5(10)
-        vae1.train(X1, epochs=1)
-        score1 = vae1.score(X_test)
+        Returns
+        -------
+        dict
+            Dictionary containing common test statistics liek accuracy, precision, recall, f1-score and a confusion matrix
 
-        vae2 = CVAE(shape=(28, 28), random_state=0)
-        vae2.build_lenet5(10)
-        vae2.train(X2, epochs=1)
-        score2 = vae2.score(X_test)
-        # test if all scores are the same
-        self.assertTrue([(s1 == s2).all() for (s1, s2) in zip(score1, score2)])
+        """
+        # data
+        y_pred = self.predict(X_test, threshold)
+        y_test = (y_test != 0)  # set everything but zero to 1
+        # stats
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred)
+        recall = recall_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred)
+        confusion = confusion_matrix(y_test, y_pred)
+        return_vals = {"accuracy": accuracy,
+                       "precision": precision,
+                       "recall": recall,
+                       "f1": f1,
+                       "confusion": confusion}
+        if print_results:
+            confusion_string = f"[[\t%i \t%i\t]\n [\t%i \t%i\t]]" % (
+                confusion[0][0], confusion[0][1], confusion[1][0], confusion[1][1])
+            print("Stats\n"
+                  "----\n"
+                  "threshold: %0.4f \n"
+                  "accuracy: %0.2f\n"
+                  "f1-score: %0.2f\n"
+                  "precision: %0.2f\n"
+                  "recall: %0.2f\n"
+                  "confusion matrix:\n%s" % (threshold, accuracy, f1, precision, recall, confusion_string))
+        return return_vals
+
+    def plot_roc(self, X_test, y_test, filepath="roc.png"):
+        """Plot the Receiver operating characteristic
+
+        Calculates the receiver operating characteristic and saves a plot to disk.
+
+        Parameters
+        ----------
+        X_test : 'obj':np.ndarray
+            Subset used for testing.
+        y_test : 'obj':np.ndarray
+            Test set labels
+        filepath : 'obj':str
+            Filepath to be used for saving the plot.
+        """
+        y_test = (y_test != 0)  # set everything but zero to 1
+        pos = np.mean(y_test)  # positive samples
+        neg = 1-pos
+        # calculate score
+        score_test = self.score(X_test, n_samples=20)
+        # compute roc curve
+        false_pos, true_pos, threshold = roc_curve(y_test, score_test)
+        y_pred = score_test[np.newaxis].transpose() > threshold
+        accuracy = np.mean(y_pred == y_test[np.newaxis].transpose(), axis=0)
+        # accuracy = (true_pos-false_pos)*pos+neg  # (TP+TN)/(P+N)
+        roc_auc = auc(false_pos, true_pos)
+        # max accuracy threshold
+        idx = np.argmax(accuracy)
+        fig, ax = plt.subplots()
+        plt.scatter(false_pos[idx], true_pos[idx], c="b",
+                    s=70, label="maximal ACC= %0.2f" % accuracy[idx])
+        plt.title('Receiver Operating Characteristic')
+        plt.plot(false_pos, true_pos, 'b',
+                 label='ROC curve (AUC= %0.2f)' % roc_auc)
+        plt.legend(loc='lower right')
+        plt.plot([0, 1], [0, 1], 'r--')
+        plt.xlim([0, 1])
+        plt.ylim([0, 1])
+        plt.ylabel('True Positive Rate')
+        plt.xlabel('False Positive Rate')
+        plt.savefig(filepath)
+
+    def plot_prc(self, X_test, y_test, beta=1, filepath="prc.png"):
+        """Plot the Precision and Recall Statistics
+        Calculates the precision and recall statistics and saves a plot to disk.
+
+        Parameters
+        ----------
+        X_test : 'obj':np.ndarray
+            Subset used for testing.
+        y_test : 'obj':np.ndarray
+            Test set labels
+        beta : float
+            determines the F_beta function to use. 
+        filepath : 'obj':str
+            Filepath to be used for saving the plot.
+        """
+        y_test = (y_test != 0)  # set everything but zero to 1
+        pos = np.mean(y_test)  # positive samples
+        # calculate score
+        score_val = self.score(X_test, n_samples=20)
+        # compute precision, recall curve
+        precision, recall, _ = precision_recall_curve(y_test, score_val)
+        precision = precision[:-1]
+        recall = recall[:-1]
+        f = (1+beta**2)*precision*recall/((precision*beta**2)+recall)
+        prc_auc = auc(recall, precision)
+        # max f1 threshold
+        idx = np.argmax(f)
+        fig, ax = plt.subplots()
+        plt.scatter(recall[idx], precision[idx], c="b", s=70,
+                    label="maximal F%0.1f= %0.2f" % (beta, f[idx]))
+        plt.title('Precision-Recall Characteristic')
+        plt.plot(recall, precision, 'b',
+                 label='PRC curve (AUC= %0.2f)' % prc_auc)
+        plt.legend(loc='lower right')
+        plt.xlim([0, 1])
+        plt.ylim([0, 1])
+        # plt.plot([0, 1], [pos, pos], 'r--')
+        plt.ylabel('Precision')
+        plt.xlabel('Recall')
+        plt.savefig(filepath)
+
+def window_stack(a, stepsize=1, window_length=3):
+    H=tuple(a[i:1+i-window_length or None:stepsize] for i in range(0,window_length))
+    return np.vstack(H)
+
+class ShiftVAE(VAE):
+
+    def __init__(self,pattern_length,shift=1,channels=1,random_state=None):
+        self.pattern_length=pattern_length
+        self.shift=shift
+        self.channels=channels
+        self.scaler=[[MinMaxScaler() for i in range(channels)] for j in range(pattern_length)]
+        super().__init__((pattern_length,channels),random_state)
+
+    def train(self, series, epochs=10, batch_size=50, X_target=None, **kwargs):
+        # normalize series to rate of change
+        # series=series[1:]/series[:-1]
+        # rearrage series to stacked matrix
+        ## INPUT pattern
+        X=window_stack(series[:-self.shift],stepsize=1,window_length=self.pattern_length)
+        X=X[...,np.newaxis]
+        X=X.swapaxes(0,1)
+        ## OUTPUT pattern
+        Y=window_stack(series[self.shift:],stepsize=1,window_length=self.pattern_length)
+        Y=Y[...,np.newaxis]
+        Y=Y.swapaxes(0,1)
+        # drop inf training data
+        # drop=np.isinf(X).any(axis=1).any(axis=1) | np.isinf(Y).any(axis=1).any(axis=1)
+        # X,Y=X[~drop],Y[~drop]
+        # train network on shifted data
+        
+        # train scalers for each position in shape X.shape=(samples,timesteps,channels)
+        for p in range(self.pattern_length):
+            for c in range(self.channels):
+                X[:,p,c]=self.scaler[p][c].fit_transform(X[:,p,c].reshape((-1,1))).ravel()
+                Y[:,p,c]=self.scaler[p][c].transform(Y[:,p,c].reshape((-1,1))).ravel()
+        super().train(X,epochs,batch_size,Y)
+
+    def predict(self,series,estimators=50):
+        # o=series[-1] # last value used for rescaling
+        # normalize series to rate of change
+        X=series[-self.pattern_length:].copy()
+        # series=np.nan_to_num(series[1:]/series[:-1]) # convert inf to very large values
+        # scale input
+        X=X.reshape((-1,)+self.shape) # reshape to trained shape
+        for p in range(self.pattern_length):
+            for c in range(self.channels):
+                X[:,p,c]=self.scaler[p][c].transform(X[:,p,c].reshape((-1,1))).ravel()
+
+        # predict
+        latent=self.encode(X).sample() # sample latent variables
+        samples=self.decode(latent).sample(estimators) # sample observation
+        # samples=samples[:,:,-self.shift:,:]  # drop unnecessary values
+        m=tf.math.reduce_mean(samples,axis=0).numpy() # expected value
+        # rescale output
+        for p in range(self.pattern_length):
+            for c in range(self.channels):
+                m[:,p,c]=self.scaler[p][c].inverse_transform(m[:,p,c].reshape((-1,1))).ravel()
+        # return np.array([o*m[:i].prod() for i in range(1,len(m)+1)])
+        return m[0,-self.shift:,:]
+        
+
 
 
 if __name__ == "__main__":
-    # print("Run unittesting...")
-    # suite = unittest.TestSuite()
-    # suite.addTest(CVAE_Testing("test_resize"))
-    # suite.addTest(CVAE_Testing("test_different_sizes"))
-    # suite.addTest(CVAE_Testing("test_save_load"))
-    # suite.addTest(CVAE_Testing("test_channel1"))
-    # runner = unittest.TextTestRunner()
-    # runner.run(suite)
-    # print("Run actual experiment...")
-    experiment4()
+    series=np.ones(10000)
+    vae=ShiftVAE(20,shift=3,channels=1)
+    vae.build_LSTM(2,20)
+    vae.train(series,epochs=1)
+    x=np.ones(20)
+    print(vae.predict(x))
