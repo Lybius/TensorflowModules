@@ -1,17 +1,9 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.keras import activations
-from tensorflow.python.keras.layers.advanced_activations import ReLU
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 import h5py
-import os
-from matplotlib import pyplot as plt
-import unittest
-from sklearn.metrics import roc_curve, precision_recall_curve, auc, confusion_matrix, confusion_matrix, roc_auc_score, accuracy_score, precision_score, accuracy_score, recall_score, f1_score, confusion_matrix
-from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.regularizers import l1_l2
 
 class VAE:
