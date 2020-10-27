@@ -1,0 +1,3 @@
+from VariationalAutoencoder import VAE
+from ShiftVAE import ShiftVAE
+from ReconstructionScoreVAE import ReconstructionScoreVAE

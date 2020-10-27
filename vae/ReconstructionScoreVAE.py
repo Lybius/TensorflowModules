@@ -3,7 +3,7 @@ import tensorflow as tf
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 from sklearn.metrics import accuracy_score, accuracy_score, auc, confusion_matrix, confusion_matrix, confusion_matrix, f1_score, precision_recall_curve, precision_score, recall_score, roc_curve
-from .VariationalAutoencoder import VAE
+from VariationalAutoencoder import VAE
 
 class ReconstructionScoreVAE(VAE):
 

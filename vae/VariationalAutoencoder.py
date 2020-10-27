@@ -57,7 +57,7 @@ class VAE:
         return self.__decoder(code)
 
 
-    def train(self, X, epochs=10, batch_size=50, X_target=None, **kwargs):
+    def train(self, X, epochs=10, batch_size=50, X_target=None, validation_split=0.1, **kwargs):
         """Train VAE with data.
 
         Parameters
@@ -80,12 +80,12 @@ class VAE:
                              outputs=decoder(encoder.outputs[0]))
         # optimize model by minimizing the expected reconstruction error
         def negative_log_likelihood(x, rv_x): return -rv_x.log_prob(x)
-        vae.compile(optimizer=tf.optimizers.Adam(clipnorm=1.0,**kwargs),
+        vae.compile(optimizer=tf.optimizers.Adam(clipvalue=1.0,**kwargs),
                     loss=negative_log_likelihood)
         # fit data to reconstruct itself
         if X_target is None: # else train alternative target representation
             X_target=X
-        vae.fit(X, X_target, batch_size=batch_size, epochs=epochs)
+        vae.fit(X, X_target, batch_size=batch_size, epochs=epochs, validation_split=validation_split)
 
 
 
@@ -222,19 +222,22 @@ class VAE:
                                 recurrent_regularizer=l1_l2(l1=l1, l2=l2),
                                 activity_regularizer=l1_l2(l1=l1, l2=l2)),
             tf.keras.layers.Dropout(dropout_rate),
-            tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(tfp.layers.IndependentBernoulli.params_size(
-                    channels), name="decoder_dense"),
-                name="time_distributor"),
-            tf.keras.layers.Dropout(dropout_rate),
-            tf.keras.layers.BatchNormalization(),
-            tfp.layers.IndependentBernoulli(channels, name="decoder_bernoulli")
+
             # tf.keras.layers.TimeDistributed(
-            #     tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
+            #     tf.keras.layers.Dense(tfp.layers.IndependentBernoulli.params_size(
             #         channels), name="decoder_dense"),
             #     name="time_distributor"),
-            # tfp.layers.IndependentNormal(channels, name="decoder_normal")
+            # tf.keras.layers.Dropout(dropout_rate),
+            # tf.keras.layers.BatchNormalization(),
+            # tfp.layers.IndependentBernoulli(channels, name="decoder_bernoulli")
+
+            tf.keras.layers.TimeDistributed(
+                tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
+                    channels), name="decoder_dense"),
+                name="time_distributor"),
+            tfp.layers.IndependentNormal(channels, name="decoder_normal")
         ])
+        
         self.__initialized_layers = True
 
     def save_weights(self, filename="weights.h5"):

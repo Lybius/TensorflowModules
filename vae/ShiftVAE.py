@@ -2,20 +2,21 @@ import numpy as np
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 
-from .VariationalAutoencoder import VAE
-from .helper import window_stack
+from VariationalAutoencoder import VAE
+from helper import window_stack
 
 
 class ShiftVAE(VAE):
 
     def __init__(self,pattern_length,shift=1,channels=1,random_state=None):
         self.pattern_length=pattern_length
+        assert shift>0 # shift must be positive
         self.shift=shift
         self.channels=channels
         self.scaler=[[MinMaxScaler() for i in range(channels)] for j in range(pattern_length)]
         super().__init__((pattern_length,channels),random_state)
 
-    def train(self, series, epochs=10, batch_size=50, X_target=None, **kwargs):
+    def train(self, series, epochs=10, batch_size=50):
         # normalize series to rate of change
         # series=series[1:]/series[:-1]
         # rearrage series to stacked matrix
@@ -39,7 +40,7 @@ class ShiftVAE(VAE):
         #         Y[:,p,c]=self.scaler[p][c].transform(Y[:,p,c].reshape((-1,1))).ravel()
         super().train(X,epochs,batch_size,Y)
 
-    def predict(self,series,estimators=50):
+    def predict(self,series,estimators=1000):
         # o=series[-1] # last value used for rescaling
         # normalize series to rate of change
         X=series[-self.pattern_length:].copy()
@@ -61,3 +62,16 @@ class ShiftVAE(VAE):
         #         m[:,p,c]=self.scaler[p][c].inverse_transform(m[:,p,c].reshape((-1,1))).ravel()
         # return np.array([o*m[:i].prod() for i in range(1,len(m)+1)])
         return m[0,-self.shift:,:]
+
+
+
+if __name__=="__main__":
+    t=np.linspace(0,100,1000)
+    series=np.sin(t)
+    vae=ShiftVAE(100,shift=1)
+    vae.build_LSTM(encoded_size=1,n_lstm=100,l1=0.1,l2=0.0,dropout_rate=0.2)
+    vae.train(series,epochs=100)
+
+    series2=np.cos(t[:100])
+    print(series2[-5:])
+    print(vae.predict(series2))
