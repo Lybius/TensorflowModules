@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
-
+from matplotlib import pyplot as plt
 from VariationalAutoencoder import VAE
 from helper import window_stack
 
@@ -67,11 +67,17 @@ class ShiftVAE(VAE):
 
 if __name__=="__main__":
     t=np.linspace(0,100,1000)
-    series=np.sin(t)
-    vae=ShiftVAE(100,shift=1)
-    vae.build_LSTM(encoded_size=1,n_lstm=100,l1=0.1,l2=0.0,dropout_rate=0.2)
-    vae.train(series,epochs=100)
+    series=np.sin(t)/2+0.5
+    series2=np.cos(t)/2+0.5
 
-    series2=np.cos(t[:100])
-    print(series2[-5:])
-    print(vae.predict(series2))
+
+    vae=ShiftVAE(100,shift=1)
+    vae.build_LSTM(encoded_size=10,n_lstm=100,l1=0.01,l2=0.1,dropout_rate=0.5,mode="bernoulli")
+    vae.train(series,epochs=200)
+
+    
+    for i in range(20):
+        x_new=vae.predict(series2)
+        series2=np.append(series2,x_new)
+    plt.plot(series2)
+    plt.savefig("plot.png")  

@@ -5,6 +5,7 @@ from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 import h5py
 from tensorflow.keras.regularizers import l1_l2
+from tensorflow.keras.callbacks import TerminateOnNaN, ModelCheckpoint, EarlyStopping
 
 class VAE:
     """Variational Autoencoder based on Keras Sequential Model."""
@@ -82,10 +83,23 @@ class VAE:
         def negative_log_likelihood(x, rv_x): return -rv_x.log_prob(x)
         vae.compile(optimizer=tf.optimizers.Adam(clipvalue=1.0,**kwargs),
                     loss=negative_log_likelihood)
+        # Define Callbacks for training
+        filepath="weights-{epoch:02d}-{val_loss:.2f}.hdf5"
+        checkpoint = ModelCheckpoint(filepath=filepath, monitor='val_loss', verbose=1, save_best_only=True, mode='max')
+        early_stopping=EarlyStopping(monitor='val_loss', min_delta=0, patience=0, verbose=1, mode='auto', baseline=None, restore_best_weights=False)
+        callbacks_list = [
+                            TerminateOnNaN(),
+                            checkpoint,
+                            early_stopping
+                        ]
         # fit data to reconstruct itself
         if X_target is None: # else train alternative target representation
             X_target=X
-        vae.fit(X, X_target, batch_size=batch_size, epochs=epochs, validation_split=validation_split)
+        vae.fit(X, X_target, 
+            batch_size=batch_size, 
+            epochs=epochs, 
+            validation_split=validation_split,
+            callbacks = callbacks_list)
 
 
 
@@ -168,7 +182,7 @@ class VAE:
         ])
         self.__initialized_layers = True
     
-    def build_LSTM(self, encoded_size, n_lstm=100,l1=0.0,l2=0.0,dropout_rate=0.5):
+    def build_LSTM(self, encoded_size, n_lstm=100,l1=0.0,l2=0.0,dropout_rate=0.5,mode="normal"):
         """Build encoder/decoder based on LSTMs.
 
         This VAE is based on a pair of LSTMs.
@@ -221,22 +235,35 @@ class VAE:
                                 kernel_regularizer=l1_l2(l1=l1, l2=l2),
                                 recurrent_regularizer=l1_l2(l1=l1, l2=l2),
                                 activity_regularizer=l1_l2(l1=l1, l2=l2)),
-            tf.keras.layers.Dropout(dropout_rate),
-
-            # tf.keras.layers.TimeDistributed(
-            #     tf.keras.layers.Dense(tfp.layers.IndependentBernoulli.params_size(
-            #         channels), name="decoder_dense"),
-            #     name="time_distributor"),
-            # tf.keras.layers.Dropout(dropout_rate),
-            # tf.keras.layers.BatchNormalization(),
-            # tfp.layers.IndependentBernoulli(channels, name="decoder_bernoulli")
-
-            tf.keras.layers.TimeDistributed(
+            tf.keras.layers.Dropout(dropout_rate)
+        ])
+        if mode=="normal":
+            self.__decoder.add(
+                tf.keras.layers.TimeDistributed(
                 tf.keras.layers.Dense(tfp.layers.IndependentNormal.params_size(
                     channels), name="decoder_dense"),
-                name="time_distributor"),
-            tfp.layers.IndependentNormal(channels, name="decoder_normal")
-        ])
+                name="time_distributor")
+            )  
+            self.__decoder.add(
+                tfp.layers.IndependentNormal(channels, name="decoder_normal")
+            )
+        elif mode=="bernoulli":
+            self.__decoder.add(
+                    tf.keras.layers.TimeDistributed(
+                    tf.keras.layers.Dense(tfp.layers.IndependentBernoulli.params_size(
+                        channels), name="decoder_dense"),
+                    name="time_distributor")
+                )
+            self.__decoder.add(
+                tf.keras.layers.Dropout(dropout_rate)
+            )
+            self.__decoder.add(
+                tf.keras.layers.BatchNormalization()
+            )
+            self.__decoder.add(
+                tfp.layers.IndependentBernoulli(channels, name="decoder_bernoulli")
+            )          
+            
         
         self.__initialized_layers = True
 
